@@ -69,24 +69,25 @@ export default function Home(ctx) {
         [["/cards", "layers", "Flashcards"], ["/practice", "calculator", "Practice problems"], ["/test", "clipboard-check", "Take a test"]].map(([to, ic, label]) => h("button", { type: "button", class: "pill", onclick: () => go(to) }, icon(ic, 17), label)),
         h("button", { type: "button", class: "pill", onclick: () => go("/weak-spots") }, icon("target", 17), "Weak spots", v.weakTopics.length > 0 && h("span", { class: "count" }, v.weakTopics.length))
       ),
-      h("p", { class: "muted small" }, "Your notes and progress stay in this browser. No ads, no tracking, no accounts for students. ", h("a", { href: "/login" }, "Teacher? Log in or sign up."))
+      h("p", { class: "muted small" }, "Your notes and progress stay in this browser. No ads, no tracking, no accounts for students. ", h("a", { href: "/login?role=teacher" }, "Teacher? Log in or sign up."))
     );
   }
   draw();
   // Redraw only when something shown here changed, so text typed into the notes box or class-code box isn't lost.
   const signature = () => {
     const v = study.view();
-    return [v.notes.length, v.currentStreak, v.masteredTopics.length, v.weakTopics.length].join("|");
+    return [v.notes.length, v.currentStreak, v.masteredTopics.length, v.weakTopics.length, classSession.get()?.classId ?? ""].join("|");
   };
   let last = signature();
-  ctx.cleanup(
-    subscribe(() => {
-      const now = signature();
-      if (now !== last) {
-        last = now;
-        draw();
-      }
-    })
-  );
+  const redraw = () => {
+    const now = signature();
+    if (now !== last) {
+      last = now;
+      draw();
+    }
+  };
+  ctx.cleanup(subscribe(redraw));
+  ctx.cleanup(classSession.subscribe(redraw)); // e.g. a class picked by an account that has since logged out is dropped
+
   return root;
 }

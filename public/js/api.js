@@ -10,10 +10,12 @@ export class ApiError extends Error {
 async function request(method, path, body) {
   const headers = { "X-Requested-With": "StudyBuddy" }; // the server only accepts changes from our own pages
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  // Students identify themselves with the private token their browser got when they joined a class.
+  // A guest proves who they are with the private token their browser got when they joined a class. A logged-in
+  // student's login cookie does that, and this header says which of their classes the request is about.
   if (path.startsWith("/api/student/") && !path.endsWith("/join")) {
     const s = classSession.get();
-    if (s) headers.Authorization = `Bearer ${s.token}`;
+    if (s?.token) headers.Authorization = `Bearer ${s.token}`;
+    else if (s?.classId) headers["X-Class-Id"] = String(s.classId);
   }
   let res;
   try {

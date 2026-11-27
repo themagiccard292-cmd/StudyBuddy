@@ -3,7 +3,7 @@ import { Router } from "express";
 import { randomInt } from "node:crypto";
 import { HttpError, str, int, oneOf, list, camel } from "../http.js";
 import { isUniqueViolation } from "../db.js";
-import { hashPassword, verifyPassword, startSession, endSession, currentTeacher, requireTeacher, attemptLimiter } from "../auth.js";
+import { hashPassword, requireTeacher, endSessionsFor, temporaryPassword } from "../auth.js";
 import { geminiJson } from "../gemini.js";
 import { TEACHER_SYSTEM, HOMEWORK_JSON_SHAPE, NOTES_MAX_CHARS } from "../prompts.js";
 import { validateHomework, cleanDraft, totalPoints } from "../homework.js";
@@ -12,53 +12,7 @@ const ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O or 1/I, easy to re
 const joinCode = () => Array.from({ length: 6 }, () => ALPHABET[randomInt(ALPHABET.length)]).join("");
 const parse = (text) => JSON.parse(text);
 
-export function authRoutes({ db }) {
-  const r = Router();
-  const limiter = attemptLimiter({ max: 12 });
-
-  r.post("/register", limiter, async (req, res) => {
-    const b = req.body ?? {};
-    const email = str(b.email, { name: "Email", min: 3, max: 200 }).toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, "Enter a valid email address.");
-    const displayName = str(b.displayName, { name: "Your name", min: 1, max: 60 });
-    const password = str(b.password, { name: "Password", min: 8, max: 200, trim: false });
-    const taken = new HttpError(409, "That email already has an account. Try logging in.");
-    if (await db.get("SELECT 1 AS x FROM users WHERE lower(email) = ?", [email])) throw taken;
-    let id;
-    try {
-      ({ id } = (await db.run("INSERT INTO users (email, display_name, password_hash) VALUES (?, ?, ?) RETURNING id", [email, displayName, await hashPassword(password)])).rows[0]);
-    } catch (e) {
-      if (isUniqueViolation(e)) throw taken; // two sign-ups for one address at the same moment
-      throw e;
-    }
-    await startSession(db, res, req, id);
-    res.status(201).json({ user: { id, email, displayName } });
-  });
-
-  r.post("/login", limiter, async (req, res) => {
-    const b = req.body ?? {};
-    const email = str(b.email, { name: "Email", min: 1, max: 200 }).toLowerCase();
-    const password = str(b.password, { name: "Password", min: 1, max: 200, trim: false });
-    const row = await db.get("SELECT id, email, display_name, password_hash FROM users WHERE lower(email) = ?", [email]);
-    // Same message whether the email or the password was wrong.
-    if (!row || !(await verifyPassword(password, row.password_hash))) throw new HttpError(401, "That email or password isn't right.");
-    await startSession(db, res, req, row.id);
-    res.json({ user: { id: row.id, email: row.email, displayName: row.display_name } });
-  });
-
-  r.post("/logout", async (req, res) => {
-    await endSession(db, req, res);
-    res.json({ ok: true });
-  });
-
-  r.get("/me", async (req, res) => {
-    res.json({ user: await currentTeacher(db, req) });
-  });
-
-  return r;
-}
-
-export function teacherRoutes({ db, limit }) {
+export function teacherRoutes({ db, limit, guard }) {
   const r = Router();
   r.use(requireTeacher(db));
 
@@ -111,7 +65,7 @@ export function teacherRoutes({ db, limit }) {
     const [curricula, students, assignments, subs] = await Promise.all([
       db.all("SELECT id, title, LENGTH(content)::int AS chars, created_at FROM curricula WHERE class_id = ? ORDER BY id DESC", [cls.id]),
       db.all(
-        `SELECT s.id, s.first_name, s.created_at,
+        `SELECT s.id, s.first_name, s.created_at, (s.user_id IS NOT NULL) AS has_login,
            (SELECT COUNT(*)::int FROM submissions x WHERE x.student_id = s.id) AS completed
          FROM students s WHERE s.class_id = ? ORDER BY lower(s.first_name)`,
         [cls.id]
@@ -146,6 +100,23 @@ export function teacherRoutes({ db, limit }) {
     const cls = await ownedClass(int(req.params.id, { name: "Class" }), req.teacher.id);
     await db.run("DELETE FROM classes WHERE id = ?", [cls.id]); // students, curricula, homework, results cascade
     res.json({ ok: true });
+  });
+
+  // ---- student logins ----
+  // Student accounts have no email, so the teacher is the recovery path: a new temporary password, shown once.
+  r.post("/students/:id/reset-password", async (req, res) => {
+    const row = await db.get(
+      `SELECT s.id, s.user_id, u.username FROM students s
+       JOIN classes c ON c.id = s.class_id JOIN users u ON u.id = s.user_id
+       WHERE s.id = ? AND c.teacher_id = ?`,
+      [int(req.params.id, { name: "Student" }), req.teacher.id]
+    );
+    if (!row) throw new HttpError(404, "That student doesn't have a login in your class.");
+    const tempPassword = temporaryPassword();
+    await db.run("UPDATE users SET password_hash = ? WHERE id = ?", [await hashPassword(tempPassword), row.user_id]);
+    await endSessionsFor(db, row.user_id); // whoever was logged in with the old password is signed out
+    guard?.ok(`s:${row.username}`); // the lockout message tells students to ask for a reset, so the reset lifts it
+    res.json({ username: row.username, tempPassword });
   });
 
   // ---- curricula ----

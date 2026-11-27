@@ -2,7 +2,7 @@
 import { Router } from "express";
 import { randomBytes } from "node:crypto";
 import { HttpError, sha256, str, int, list, camel } from "../http.js";
-import { attemptLimiter } from "../auth.js";
+import { attemptLimiter, currentUser } from "../auth.js";
 import { gradeAnswers } from "../grade.js";
 import { totalPoints, toPublic } from "../homework.js";
 
@@ -12,37 +12,81 @@ const parse = (t) => JSON.parse(t);
 export function studentRoutes({ db, limit }) {
   const r = Router();
 
-  r.post("/join", attemptLimiter({ max: 20 }), async (req, res) => {
+  // Joining works for guests (a first name and a private token kept on this device) and for logged-in students
+  // (the class is attached to their account, so it follows them to any device).
+  r.post("/join", attemptLimiter({ max: 120 }), async (req, res) => {
     const code = str(req.body?.code, { name: "Class code", min: 1, max: 12 }).toUpperCase();
     if (!/^[A-Z0-9]{6}$/.test(code)) throw new HttpError(400, "Class codes are 6 letters and numbers.");
-    const firstName = str(req.body?.firstName, { name: "First name", min: 1, max: 30 });
+    const user = await currentUser(db, req);
+    if (user && user.role !== "student") throw new HttpError(403, "You're logged in as a teacher. Log out to join a class as a student.");
+    const firstName = user ? user.displayName : str(req.body?.firstName, { name: "First name", min: 1, max: 30 });
     if (!/^[\p{L}][\p{L}\p{M}' .-]*$/u.test(firstName)) throw new HttpError(400, "Use letters only for your first name.");
 
     const cls = await db.get("SELECT id, name FROM classes WHERE join_code = ?", [code]);
     if (!cls) throw new HttpError(404, "No class has that code. Check it with your teacher.");
-    const taken = new Set((await db.all("SELECT first_name FROM students WHERE class_id = ?", [cls.id])).map((s) => s.first_name.toLowerCase()));
+
+    if (user) {
+      const already = await db.get("SELECT first_name FROM students WHERE user_id = ? AND class_id = ?", [user.id, cls.id]);
+      if (already) return res.json({ classId: cls.id, className: cls.name, firstName: already.first_name, alreadyJoined: true });
+    }
+    const taken = new Set((await db.all("SELECT first_name FROM students WHERE class_id = ?", [cls.id])).map((x) => x.first_name.toLowerCase()));
     if (taken.size >= MAX_STUDENTS) throw new HttpError(400, "That class is full.");
 
     // Two students with the same first name get a number so the teacher can tell them apart.
     let name = firstName;
     for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${firstName} (${n})`;
 
+    if (user) {
+      await db.run("INSERT INTO students (class_id, first_name, user_id) VALUES (?, ?, ?)", [cls.id, name, user.id]);
+      return res.status(201).json({ classId: cls.id, className: cls.name, firstName: name });
+    }
     const token = randomBytes(24).toString("base64url");
     await db.run("INSERT INTO students (class_id, first_name, token_hash) VALUES (?, ?, ?)", [cls.id, name, sha256(token)]);
     res.status(201).json({ token, classId: cls.id, className: cls.name, firstName: name });
   });
 
-  // Everything below needs the student's token: Authorization: Bearer <token>
+  // Who is asking: a guest (Authorization: Bearer <token>) or a logged-in student account (cookie).
+  const membershipSql = `SELECT s.id, s.first_name, c.id AS class_id, c.name AS class_name
+       FROM students s JOIN classes c ON c.id = s.class_id`;
+  const asStudent = (m) => ({ id: m.id, firstName: m.first_name, classId: m.class_id, className: m.class_name });
+
   r.use(async (req, _res, next) => {
     const token = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
-    if (!token) throw new HttpError(401, "Join your class first.");
-    const st = await db.get(
-      `SELECT s.id, s.first_name, c.id AS class_id, c.name AS class_name
-       FROM students s JOIN classes c ON c.id = s.class_id WHERE s.token_hash = ?`,
-      [sha256(token)]
+    if (token) {
+      const m = await db.get(`${membershipSql} WHERE s.token_hash = ?`, [sha256(token)]);
+      if (!m) throw new HttpError(404, "We couldn't find you in that class. Join again with your class code.");
+      req.student = asStudent(m);
+      return next();
+    }
+    const user = await currentUser(db, req);
+    if (!user) throw new HttpError(401, "Log in or join your class first.");
+    if (user.role !== "student") throw new HttpError(403, "Student accounts only.");
+    req.account = user;
+    next();
+  });
+
+  // A logged-in student can be in several classes.
+  r.get("/classes", async (req, res) => {
+    if (!req.account) throw new HttpError(403, "Log in to see all your classes.");
+    const rows = await db.all(
+      `SELECT s.id AS membership_id, c.id AS class_id, c.name AS class_name, s.first_name,
+         (SELECT COUNT(*)::int FROM assignments a WHERE a.class_id = c.id AND a.status = 'published'
+            AND NOT EXISTS (SELECT 1 FROM submissions x WHERE x.assignment_id = a.id AND x.student_id = s.id)) AS to_do
+       FROM students s JOIN classes c ON c.id = s.class_id WHERE s.user_id = ? ORDER BY lower(c.name)`,
+      [req.account.id]
     );
-    if (!st) throw new HttpError(404, "We couldn't find you in that class. Join again with your class code.");
-    req.student = { id: st.id, firstName: st.first_name, classId: st.class_id, className: st.class_name };
+    res.json({ classes: rows.map(camel) });
+  });
+
+  // Everything below is about one class. Accounts say which with the X-Class-Id header.
+  r.use(async (req, _res, next) => {
+    if (req.student) return next();
+    const wanted = req.headers["x-class-id"];
+    const mine = await db.all(`${membershipSql} WHERE s.user_id = ?`, [req.account.id]);
+    if (!mine.length) throw new HttpError(404, "Join a class with your teacher's code first.");
+    const m = wanted ? mine.find((x) => String(x.class_id) === String(wanted)) : mine.length === 1 ? mine[0] : null;
+    if (!m) throw new HttpError(wanted ? 404 : 400, wanted ? "You're not in that class." : "Pick a class first.");
+    req.student = asStudent(m);
     next();
   });
 

@@ -3,15 +3,13 @@ import { rich, richInline } from "../rich.js";
 import { api } from "../api.js";
 import { classSession } from "../store.js";
 import { navigate } from "../router.js";
+import { requireStudentClass } from "./_auth.js";
 import { errorBox } from "../ui.js";
 
 const LETTERS = ["A", "B", "C", "D"];
 
 export default async function Homework(ctx) {
-  if (!classSession.get()) {
-    navigate("/join", { replace: true });
-    return h("div");
-  }
+  if (!(await requireStudentClass())) return h("div");
   const id = ctx.params.id;
   let data;
   try {

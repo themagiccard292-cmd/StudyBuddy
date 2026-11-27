@@ -4,6 +4,7 @@ import { extractFileText } from "./pdf.js";
 import { toast } from "./toast.js";
 import { getMode, setMode, onThemeChange } from "./theme.js";
 import { navigate } from "./router.js";
+import { auth } from "./auth.js";
 
 // ---------- theme switch (light / dark / auto) ----------
 export function themeSwitch() {
@@ -39,37 +40,48 @@ const NAV = [
 export function createHeader() {
   const el = h("header", { class: "header" });
   let meta = {};
-  let teacher = null;
 
   function draw() {
     const v = study.view();
     const session = classSession.get();
+    const user = auth.get(); // undefined while we find out, null when logged out
     const inTeacher = meta.area === "teacher";
+    const isTeacher = user?.role === "teacher";
+    const isStudent = user?.role === "student";
     const here = location.pathname;
+
+    const account = user
+      ? [
+          h("a", { class: "who-link", href: "/account", title: "Your account" }, icon("user-round", 15), h("span", { class: "who-name" }, user.displayName)),
+          h("button", { class: "btn btn-ghost btn-sm logout-btn", type: "button", onclick: onLogout, "aria-label": "Log out" }, icon("log-out"), h("span", { class: "hide-sm" }, "Log out")),
+        ]
+      : user === null
+        ? [h("a", { class: "btn btn-outline btn-sm", href: "/login" }, icon("log-in"), h("span", null, "Log in"))]
+        : [];
+    const joinLabel = isStudent ? "My classes" : session ? "My class" : "Join class";
 
     mount(
       el,
       h(
         "div",
         { class: "header-bar" },
-        h("a", { class: "brand", href: inTeacher ? "/teacher" : "/", "aria-label": "StudyBuddy home" }, logo(), h("span", { class: "brand-text" }, "Study", h("span", { class: "mark" }, "Buddy"))),
+        h("a", { class: "brand", href: isTeacher ? "/teacher" : "/", "aria-label": "StudyBuddy home" }, logo(), h("span", { class: "brand-text" }, "Study", h("span", { class: "mark" }, "Buddy"))),
         h(
           "div",
           { class: "header-actions" },
           inTeacher
-            ? [
-                teacher && h("span", { class: "who" }, teacher.displayName),
-                teacher && h("button", { class: "btn btn-ghost btn-sm", type: "button", onclick: onLogout }, icon("log-out"), h("span", { class: "hide-sm" }, "Log out")),
-              ]
+            ? account
             : [
-                h("a", { class: "btn btn-primary btn-sm btn-pill", href: session ? "/class" : "/join", "aria-label": session ? "My class" : "Join class" }, icon("school"), h("span", { class: "join-text" }, session ? "My class" : "Join class")),
-                h("span", { class: `chip-stat${v.currentStreak > 0 ? " hot" : ""}`, title: v.currentStreak ? `${v.currentStreak}-day streak. ${v.masteredTopics.length} topics mastered.` : "Answer one question today to start a streak." }, icon("flame", 15), h("b", null, v.currentStreak), h("span", { class: "hide-sm" }, "day streak")),
-                h("a", { class: "btn btn-ghost btn-sm teachers-link", href: "/login" }, icon("graduation-cap"), h("span", null, "Teachers")),
+                !isTeacher && h("a", { class: "btn btn-primary btn-sm btn-pill", href: isStudent || session ? "/class" : "/join", "aria-label": joinLabel }, icon("school"), h("span", { class: "join-text" }, joinLabel)),
+                h("span", { class: `chip-stat streak-chip${v.currentStreak > 0 ? " hot" : ""}`, title: v.currentStreak ? `${v.currentStreak}-day streak. ${v.masteredTopics.length} topics mastered.` : "Answer one question today to start a streak." }, icon("flame", 15), h("b", null, v.currentStreak), h("span", { class: "hide-sm" }, "day streak")),
+                isTeacher && h("a", { class: "btn btn-ghost btn-sm", href: "/teacher" }, icon("graduation-cap"), h("span", { class: "hide-sm" }, "My classes")),
+                account,
               ],
           themeSwitch()
         )
       ),
       meta.nav &&
+        !inTeacher &&
         h(
           "nav",
           { class: "nav", "aria-label": "Study modes" },
@@ -81,22 +93,17 @@ export function createHeader() {
   }
 
   async function onLogout() {
-    const { api } = await import("./api.js");
-    await api.post("/api/auth/logout").catch(() => {});
-    teacher = null;
+    await auth.logout();
     navigate("/");
   }
 
   subscribe(draw);
   classSession.subscribe(draw);
+  auth.subscribe(draw);
   return {
     el,
     update(newMeta) {
       meta = newMeta;
-      draw();
-    },
-    setTeacher(t) {
-      teacher = t;
       draw();
     },
   };
@@ -140,7 +147,8 @@ export function segmented({ label, value, options, onChange }) {
 }
 
 export function field(label, control, hint) {
-  return h("div", { class: "field" }, h("span", { class: "label" }, label), control, hint && h("span", { class: "hint" }, hint));
+  // A real <label for> gives the control its accessible name (password boxes have no placeholder to fall back on).
+  return h("div", { class: "field" }, h("label", { class: "label", for: control?.id || null }, label), control, hint && h("span", { class: "hint" }, hint));
 }
 
 export function dialog({ title, body, actions, onClose }) {

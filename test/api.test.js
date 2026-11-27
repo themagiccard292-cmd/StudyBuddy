@@ -54,7 +54,7 @@ before(async () => {
   globalThis.fetch = (url, init) => (String(url).includes("googleapis.com") ? Promise.resolve(fakeGemini(url, init)) : realFetch(url, init));
   // TEST_DATABASE_URL runs the same tests through the real Postgres driver; otherwise an in-memory Postgres (PGlite).
   db = openDb(process.env.TEST_DATABASE_URL ? { url: process.env.TEST_DATABASE_URL } : { url: null, path: ":memory:" });
-  const app = createApp({ db, config: { sessionSecret: "test-secret", dailyAiLimit: 6, trustProxy: false } });
+  const app = createApp({ db, config: { sessionSecret: "test-secret", dailyAiLimit: 6, trustProxy: false, teacherAttemptsPerMinute: 1000 } });
   await new Promise((resolve) => (server = app.listen(0, resolve)));
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -63,7 +63,7 @@ after(() => {
   server.close();
 });
 
-async function api(method, path, { body, cookie, token } = {}) {
+async function api(method, path, { body, cookie, token, headers: extra } = {}) {
   const res = await realFetch(base + path, {
     method,
     headers: {
@@ -71,6 +71,7 @@ async function api(method, path, { body, cookie, token } = {}) {
       ...(body ? { "Content-Type": "application/json" } : {}),
       ...(cookie ? { Cookie: cookie } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(extra ?? {}),
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -544,4 +545,205 @@ test("backup AI: if the backup fails too the student gets a friendly message, an
   assert.equal(backupConfig({ BACKUP_AI_KEY: "k", BACKUP_AI_PROVIDER: "weird", BACKUP_AI_MODEL: "m" }), null);
   assert.equal(backupConfig({ BACKUP_AI_KEY: "k", BACKUP_AI_PROVIDER: "anthropic" }).model, "claude-haiku-5-5");
   assert.equal(backupConfig({ BACKUP_AI_KEY: "k", BACKUP_AI_MODEL: "m" }).baseUrl, "https://api.openai.com/v1");
+});
+
+// ---------- student + teacher accounts ----------
+const mcQuestion = { id: "q1", type: "mc", topic: "Cells", question: "Which organelle makes ATP?", choices: ["Mitochondria", "Nucleus", "Ribosome", "Wall"], correctIndex: 0, explanation: "Mitochondria make ATP.", points: 2 };
+
+async function teacherWithClass(name, email = `${name.replace(/\W/g, "").toLowerCase()}${Date.now()}${Math.floor(Math.random() * 1e4)}@school.org`) {
+  const reg = await api("POST", "/api/auth/register", { body: { email, displayName: "Ms. " + name, password: "longenough1" } });
+  const cls = await api("POST", "/api/teacher/classes", { cookie: reg.cookie, body: { name } });
+  const hw = await api("POST", `/api/teacher/classes/${cls.json.id}/homework`, { cookie: reg.cookie, body: { title: `${name} homework`, status: "published", questions: [mcQuestion] } });
+  return { cookie: reg.cookie, email, classId: cls.json.id, code: cls.json.joinCode, homeworkId: hw.json.id };
+}
+const registerStudent = (username, extra = {}) => api("POST", "/api/auth/student/register", { body: { username, firstName: "Sam", password: "student-pass-1", ...extra } });
+
+test("student accounts: sign up, log in, log out, and the rules that protect them", async () => {
+  const reg = await registerStudent("Sam.Lee");
+  assert.equal(reg.status, 201);
+  assert.equal(reg.json.user.role, "student");
+  assert.equal(reg.json.user.email, null);
+  const me = await api("GET", "/api/auth/me", { cookie: reg.cookie });
+  assert.deepEqual([me.json.user.role, me.json.user.username, me.json.user.displayName], ["student", "Sam.Lee", "Sam"]);
+
+  assert.equal((await registerStudent("sam.lee")).status, 409); // usernames are not case-sensitive
+  for (const bad of ["ab", "has space", "name@mail.com", "x".repeat(25)]) assert.equal((await registerStudent(bad)).status, 400, bad);
+  assert.equal((await registerStudent("short-pass", { password: "1234567" })).status, 400);
+  assert.equal((await registerStudent("odd-name", { firstName: "S4m!" })).status, 400);
+
+  // wrong username and wrong password look identical
+  const wrongPass = await api("POST", "/api/auth/student/login", { body: { username: "Sam.Lee", password: "nope-nope-1" } });
+  const noUser = await api("POST", "/api/auth/student/login", { body: { username: "nobody-here", password: "nope-nope-1" } });
+  assert.equal(wrongPass.status, 401);
+  assert.deepEqual(wrongPass.json, { error: "That username or password isn't right." });
+  assert.deepEqual(noUser.json, wrongPass.json);
+
+  const login = await api("POST", "/api/auth/student/login", { body: { username: "SAM.LEE", password: "student-pass-1" } });
+  assert.equal(login.status, 200);
+  await api("POST", "/api/auth/logout", { cookie: login.cookie });
+  assert.equal((await api("GET", "/api/auth/me", { cookie: login.cookie })).json.user, null);
+
+  // changes still need our own header (cross-site forms can't send it)
+  const noHeader = await realFetch(base + "/api/auth/student/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "csrf-kid", firstName: "A", password: "student-pass-1" }) });
+  assert.equal(noHeader.status, 403);
+});
+
+test("accounts keep teachers and students apart", async () => {
+  const t = await teacherWithClass("Separate");
+  const s = await registerStudent("separate.kid");
+  assert.equal((await api("GET", "/api/teacher/classes", { cookie: s.cookie })).status, 403); // students can't use teacher tools
+  assert.equal((await api("POST", `/api/teacher/classes/${t.classId}/homework`, { cookie: s.cookie, body: {} })).status, 403);
+  assert.equal((await api("GET", "/api/student/classes", { cookie: t.cookie })).status, 403); // teachers aren't students
+  assert.equal((await api("POST", "/api/student/join", { cookie: t.cookie, body: { code: t.code } })).status, 403);
+  // an email can't log in as a student, and a username can't log in as a teacher
+  assert.equal((await api("POST", "/api/auth/student/login", { body: { username: t.email, password: "longenough1" } })).status, 401);
+  assert.equal((await api("POST", "/api/auth/login", { body: { email: "separate.kid", password: "student-pass-1" } })).status, 401);
+  assert.equal((await api("GET", "/api/student/class")).status, 401); // nobody logged in
+});
+
+test("a logged-in student joins classes by code, switches between them, and the teacher sees them", async () => {
+  const a = await teacherWithClass("Biology");
+  const b = await teacherWithClass("History");
+  const stu = await registerStudent("many.classes", { firstName: "Alex" });
+  const cookie = stu.cookie;
+
+  const join = await api("POST", "/api/student/join", { cookie, body: { code: a.code.toLowerCase() } }); // no first name needed
+  assert.equal(join.status, 201);
+  assert.equal(join.json.token, undefined); // the account is the proof, not a device token
+  assert.equal(join.json.firstName, "Alex");
+  assert.equal((await api("POST", "/api/student/join", { cookie, body: { code: a.code } })).json.alreadyJoined, true);
+
+  // one class: no need to say which
+  const one = await api("GET", "/api/student/class", { cookie });
+  assert.equal(one.json.className, "Biology");
+  assert.equal(one.json.homework.length, 1);
+  assert.equal(JSON.stringify(await api("GET", `/api/student/homework/${a.homeworkId}`, { cookie })).includes("correctIndex"), false);
+
+  const done = await api("POST", `/api/student/homework/${a.homeworkId}/submit`, { cookie, body: { answers: [{ id: "q1", answer: "0" }] } });
+  assert.equal(done.json.score, 2);
+
+  // second class: now the student must say which one
+  await api("POST", "/api/student/join", { cookie, body: { code: b.code } });
+  const list = await api("GET", "/api/student/classes", { cookie });
+  assert.deepEqual(list.json.classes.map((c) => [c.className, c.toDo]), [["Biology", 0], ["History", 1]]);
+  assert.equal((await api("GET", "/api/student/class", { cookie })).status, 400);
+  assert.equal((await api("GET", "/api/student/class", { cookie, headers: { "X-Class-Id": String(b.classId) } })).json.className, "History");
+  // a class they aren't in can't be reached by guessing its id
+  const c = await teacherWithClass("Secret");
+  assert.equal((await api("GET", "/api/student/class", { cookie, headers: { "X-Class-Id": String(c.classId) } })).status, 404);
+  assert.equal((await api("GET", `/api/student/homework/${c.homeworkId}`, { cookie, headers: { "X-Class-Id": String(a.classId) } })).status, 404);
+
+  // the teacher sees the student, with a login
+  const detail = await api("GET", `/api/teacher/classes/${a.classId}`, { cookie: a.cookie });
+  const row = detail.json.students.find((x) => x.firstName === "Alex");
+  assert.equal(row.hasLogin, true);
+  assert.equal(row.completed, 1);
+  const results = await api("GET", `/api/teacher/homework/${a.homeworkId}/results`, { cookie: a.cookie });
+  assert.equal(results.json.students.find((x) => x.firstName === "Alex").percent, 100);
+});
+
+test("a guest who joined with a code keeps their class when they make an account", async () => {
+  const t = await teacherWithClass("Claim");
+  const guest = await api("POST", "/api/student/join", { body: { code: t.code, firstName: "Gus" } });
+  await api("POST", `/api/student/homework/${t.homeworkId}/submit`, { token: guest.json.token, body: { answers: [{ id: "q1", answer: "0" }] } });
+
+  const reg = await registerStudent("gus.account", { firstName: "Gus", guestToken: guest.json.token });
+  assert.equal(reg.json.claimedClass, true);
+  assert.equal((await api("GET", "/api/student/class", { token: guest.json.token })).status, 404); // the old device token no longer works
+  const home = await api("GET", "/api/student/class", { cookie: reg.cookie });
+  assert.equal(home.json.className, "Claim");
+  assert.equal(home.json.homework[0].submission.score, 2); // and the homework result came with it
+  const detail = await api("GET", `/api/teacher/classes/${t.classId}`, { cookie: t.cookie });
+  assert.equal(detail.json.students.length, 1); // still one Gus, not two
+  // a token can't be claimed twice
+  assert.equal((await registerStudent("gus.again", { guestToken: guest.json.token })).json.claimedClass, false);
+
+  // logging in to an existing account claims too, but never creates a second membership in a class the account is already in
+  const g2 = await api("POST", "/api/student/join", { body: { code: t.code, firstName: "Gus" } });
+  const dupe = await api("POST", "/api/auth/student/login", { body: { username: "gus.account", password: "student-pass-1", guestToken: g2.json.token } });
+  assert.equal(dupe.json.claimedClass, false);
+  const other = await teacherWithClass("Claim2");
+  const g3 = await api("POST", "/api/student/join", { body: { code: other.code, firstName: "Gus" } });
+  const moved = await api("POST", "/api/auth/student/login", { body: { username: "gus.account", password: "student-pass-1", guestToken: g3.json.token } });
+  assert.equal(moved.json.claimedClass, true);
+  assert.deepEqual((await api("GET", "/api/student/classes", { cookie: moved.cookie })).json.classes.map((c) => c.className).sort(), ["Claim", "Claim2"]);
+});
+
+test("teachers can reset a student's password; students can change their own", async () => {
+  const t = await teacherWithClass("Reset");
+  const other = await teacherWithClass("OtherTeacher");
+  const stu = await registerStudent("forgot.it", { firstName: "Fay" });
+  await api("POST", "/api/student/join", { cookie: stu.cookie, body: { code: t.code } });
+  const member = (await api("GET", `/api/teacher/classes/${t.classId}`, { cookie: t.cookie })).json.students[0];
+
+  assert.equal((await api("POST", `/api/teacher/students/${member.id}/reset-password`, { cookie: other.cookie })).status, 404); // not their student
+  assert.equal((await api("POST", `/api/teacher/students/${member.id}/reset-password`, { cookie: stu.cookie })).status, 403); // students can't
+
+  const reset = await api("POST", `/api/teacher/students/${member.id}/reset-password`, { cookie: t.cookie });
+  assert.equal(reset.status, 200);
+  assert.equal(reset.json.username, "forgot.it");
+  assert.match(reset.json.tempPassword, /^[A-Za-z2-9]{10}$/);
+  assert.equal((await api("GET", "/api/auth/me", { cookie: stu.cookie })).json.user, null); // signed out everywhere
+  assert.equal((await api("POST", "/api/auth/student/login", { body: { username: "forgot.it", password: "student-pass-1" } })).status, 401);
+  const back = await api("POST", "/api/auth/student/login", { body: { username: "forgot.it", password: reset.json.tempPassword } });
+  assert.equal(back.status, 200);
+
+  // change it: the wrong current password is refused, other devices are signed out, this one stays
+  const otherDevice = await api("POST", "/api/auth/student/login", { body: { username: "forgot.it", password: reset.json.tempPassword } });
+  assert.equal((await api("POST", "/api/auth/password", { cookie: back.cookie, body: { current: "wrong-wrong-1", next: "brand-new-pass-1" } })).status, 400);
+  assert.equal((await api("POST", "/api/auth/password", { cookie: back.cookie, body: { current: reset.json.tempPassword, next: "short" } })).status, 400);
+  assert.equal((await api("POST", "/api/auth/password", { cookie: back.cookie, body: { current: reset.json.tempPassword, next: "brand-new-pass-1" } })).status, 200);
+  assert.ok((await api("GET", "/api/auth/me", { cookie: back.cookie })).json.user);
+  assert.equal((await api("GET", "/api/auth/me", { cookie: otherDevice.cookie })).json.user, null);
+  assert.equal((await api("POST", "/api/auth/student/login", { body: { username: "forgot.it", password: "brand-new-pass-1" } })).status, 200);
+  assert.equal((await api("POST", "/api/auth/password", { body: { current: "x", next: "brand-new-pass-2" } })).status, 401); // must be logged in
+});
+
+test("repeated wrong passwords lock that account for a while, not the whole class", async () => {
+  await registerStudent("lock.me");
+  await registerStudent("not.locked");
+  let last;
+  for (let i = 0; i < 11; i++) last = await api("POST", "/api/auth/student/login", { body: { username: "lock.me", password: "wrong-guess-1" } });
+  assert.equal(last.status, 429);
+  assert.equal((await api("POST", "/api/auth/student/login", { body: { username: "lock.me", password: "student-pass-1" } })).status, 429); // even the right password waits
+  assert.equal((await api("POST", "/api/auth/student/login", { body: { username: "not.locked", password: "student-pass-1" } })).status, 200); // classmates unaffected
+});
+
+test("database upgrade: a database from the earlier version is upgraded in place and the upgrade can run again", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(`${tmpdir()}/sb-migrate-`) + "/db";
+  const first = openDb({ url: null, path: dir });
+  await first.run("INSERT INTO users (email, display_name, password_hash) VALUES (?, ?, ?)", ["old@school.org", "Old", "x"]);
+  await first.close();
+  const again = openDb({ url: null, path: dir }); // second start re-runs every upgrade statement
+  const row = await again.get("SELECT email, role, username FROM users");
+  assert.deepEqual(row, { email: "old@school.org", role: "teacher", username: null });
+  await again.run("INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, 'student')", ["kid", "Kid", "x"]); // no email needed
+  await again.close();
+});
+
+test("a teacher's password reset lifts the lockout it tells the student to ask for", async () => {
+  const t = await teacherWithClass("Unlock");
+  const stu = await registerStudent("locked.out", { firstName: "Lou" });
+  await api("POST", "/api/student/join", { cookie: stu.cookie, body: { code: t.code } });
+  for (let i = 0; i < 10; i++) await api("POST", "/api/auth/student/login", { body: { username: "locked.out", password: "wrong-guess-1" } });
+  const locked = await api("POST", "/api/auth/student/login", { body: { username: "locked.out", password: "student-pass-1" } });
+  assert.equal(locked.status, 429);
+  assert.match(locked.json.error, /ask your teacher to reset the password/);
+  const member = (await api("GET", `/api/teacher/classes/${t.classId}`, { cookie: t.cookie })).json.students[0];
+  const reset = await api("POST", `/api/teacher/students/${member.id}/reset-password`, { cookie: t.cookie });
+  assert.equal((await api("POST", "/api/auth/student/login", { body: { username: "locked.out", password: reset.json.tempPassword } })).status, 200);
+});
+
+test("look-alike letters can't reach a locked account under a different lockout key", async () => {
+  await registerStudent("kid.lock");
+  for (let i = 0; i < 10; i++) await api("POST", "/api/auth/student/login", { body: { username: "kid.lock", password: "wrong-guess-1" } });
+  assert.equal((await api("POST", "/api/auth/student/login", { body: { username: "kid.lock", password: "student-pass-1" } })).status, 429);
+  // Postgres lower('İ') is 'i', but JavaScript lower-cases 'İ' to 'i̇': this must not be a fresh set of guesses at kid.lock
+  for (const variant of ["kİd.lock", "KİD.LOCK"]) {
+    assert.equal((await api("POST", "/api/auth/student/login", { body: { username: variant, password: "student-pass-1" } })).status, 401, variant);
+  }
+  // the Kelvin sign lower-cases to a plain k in both, so it shares kid.lock's lockout
+  assert.equal((await api("POST", "/api/auth/student/login", { body: { username: "Kid.lock", password: "student-pass-1" } })).status, 429);
 });

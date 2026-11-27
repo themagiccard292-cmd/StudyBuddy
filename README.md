@@ -73,7 +73,8 @@ Netlify serves the pages as static files and runs the API as one serverless func
 5. **Deploy**, then open `https://your-site.netlify.app/api/health`. You should see
    `{"ok":true,"database":true,"aiConfigured":true}`. If `database` is false, `DATABASE_URL` is missing or wrong.
 
-The tables are created automatically the first time the API runs. Netlify's own database add-on is supported through
+The tables are created automatically the first time the API runs, and an existing database is upgraded in place the
+first time the newer version starts (existing teacher accounts and classes are kept). Netlify's own database add-on is supported through
 the `NETLIFY_DB_URL` setting, but Neon with `DATABASE_URL` is the tested path.
 
 Notes for Netlify: AI calls are given 10 seconds on the main model and 18 on the fallback so they finish inside
@@ -87,7 +88,7 @@ local database. Render's free plan can't have a disk, so pick a paid plan. Or se
 
 ## What's in it
 
-**Students** (no account, no login)
+**Students** (login is optional)
 - Paste notes or upload a PDF / text file (PDFs are read in the browser and never uploaded). Notes show in a side panel.
 - **Quiz me:** multiple choice and short answer, one at a time. Wrong answers get a hint first, never the answer;
   after two tries (or on request) the answer is shown with a 1-2 sentence explanation.
@@ -97,23 +98,34 @@ local database. Render's free plan can't have a disk, so pick a paid plan. Or se
 - **Weak spots:** topics you keep missing, with a "practice my weak spots" button. Progress is a streak and a
   "topics mastered" count.
 - **Classes:** join with a 6-letter code and a first name. See class materials and homework, hand it in, get instant feedback.
+- **Accounts (optional):** sign up with a username, first name and password (no email). An account keeps your classes and
+  homework results on any device and lets you be in several classes. If you joined a class as a guest first, signing up
+  or logging in keeps that class. Change your password on the Account page.
 
-**Teachers** (email + password)
+**Teachers** (email + password, required)
 - Create classes with a join code; upload curriculum (paste or PDF) for the AI to follow.
 - Chat with the AI about the homework you want, optionally from a textbook; edit every question; publish.
 - See who finished, their scores and attempts, and which questions the class found hardest.
+- If a student forgets their password, open the class, Students tab, and press Reset password. You get a temporary
+  password to give them (shown once); it signs them out everywhere and they change it after logging in.
 
-Notes, progress and study history stay in the student's browser (`localStorage`). The database stores only teacher
-accounts, classes, curriculum, homework and class results.
+Notes, progress and study history stay in the student's browser (`localStorage`), even with an account. The database
+stores teacher and student accounts, classes, curriculum, homework and class results.
+
+**Locked-out teacher.** There is no email reset. From the project folder (with `DATABASE_URL` in `.env`), run
+`node scripts/reset-teacher-password.mjs teacher@school.org` to get a temporary password.
 
 ## Privacy and safety
 
 - No ads, no analytics, no third-party requests: fonts, math rendering and the PDF reader are all served from this site.
-- Students give a first name and a class code. No email, no password, no other personal information.
+- Students give a first name and a class code. An optional student account adds a username and a password (stored only
+  as a hash). No email, no other personal information. Teachers see first names only. Schools with students under 13
+  should check their own rules about student accounts before use.
 - Visitor IPs are used only to count the daily limit, as a salted hash; the raw IP is never stored.
 - Homework answer keys never reach a student's browser until after they hand it in.
 - Anything pasted into notes is passed to the AI as data, not instructions.
-- Teacher passwords are hashed with scrypt; sessions use HttpOnly cookies; a Content-Security-Policy is set; changes to
+- Passwords are hashed with scrypt; sessions use HttpOnly cookies; repeated wrong passwords lock that account for a few
+  minutes; a Content-Security-Policy is set; changes to
   data need a header only this site's pages send, which blocks cross-site forms.
 
 ## Gemini quota
@@ -129,15 +141,16 @@ npm test
 ```
 
 API tests run with Gemini mocked (no network, no cost) against a real Postgres (PGlite). Set `TEST_DATABASE_URL` to run
-the same tests through the real Postgres driver. They cover accounts, class isolation, the answer-key privacy rule,
+the same tests through the real Postgres driver. They cover teacher and student accounts, roles, class isolation, the answer-key privacy rule,
 grading and retakes, the daily limit, the model fail-over, the backup provider, web files, and the Netlify function, build and config.
 
 ## Layout
 
 ```
-server/            Express app, database, Gemini client, prompts, routes (ai, teacher, student)
+server/            Express app, database, auth, Gemini client, prompts, routes (ai, auth, teacher, student)
 netlify/functions/ api.js: the API as a Netlify Function
-scripts/           build-netlify.mjs assembles dist/; build-icons.mjs regenerates the icon set
+scripts/           build-netlify.mjs assembles dist/; build-icons.mjs regenerates the icon set;
+                   reset-teacher-password.mjs for a locked-out teacher
 public/            The site: plain JavaScript modules, CSS, no build step
   js/pages/        One file per page
 test/              API tests

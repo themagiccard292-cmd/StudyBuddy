@@ -327,6 +327,8 @@ label.btn:focus-within { box-shadow: var(--focus); }
   .end-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 440px) {
+  /* Tight header: log out lives on the Account page, and the streak is on the home screen */
+  .logout-btn, .streak-chip { display: none; }
   .join-text { display: none; }
   .header-actions .btn-pill { padding: 0 0.65rem; }
 }
@@ -348,4 +350,18 @@ label.btn:focus-within { box-shadow: var(--focus); }
   .join-controls .input { flex: 1; width: auto; }
   .stats { width: 100%; }
   .stats .stat { flex: 1; }
+}
+
+/* ===== accounts ===== */
+.who-link { display: inline-flex; align-items: center; gap: 0.35rem; height: 2rem; padding: 0 0.6rem; border-radius: var(--r-full); font-size: 0.8125rem; font-weight: 600; color: var(--fg); text-decoration: none; background: var(--surface); border: 1px solid var(--border); transition: border-color var(--t-fast) ease, background var(--t-fast) ease; }
+.who-link:hover { border-color: color-mix(in srgb, var(--primary) 50%, var(--border)); background: var(--primary-soft); }
+.who-name { max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.narrow-wide { max-width: 34rem; }
+.class-pick { all: unset; box-sizing: border-box; cursor: pointer; display: flex; flex-direction: column; gap: var(--s2); background: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg); padding: var(--s6); box-shadow: var(--shadow-sm); transition: transform var(--t) var(--ease), box-shadow var(--t) var(--ease), border-color var(--t) ease; }
+.class-pick:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: color-mix(in srgb, var(--primary) 50%, var(--border)); }
+.class-pick:focus-visible { box-shadow: var(--focus); }
+.temp-pass { letter-spacing: 0.12em; user-select: all; }
+@media (max-width: 640px) {
+  .who-name { display: none; }
+  .who-link { padding: 0 0.55rem; }
 }

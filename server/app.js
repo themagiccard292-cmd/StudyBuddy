@@ -5,9 +5,11 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { HttpError } from "./http.js";
 import { createLimiter } from "./limit.js";
+import { loginGuard } from "./auth.js";
 import { backupConfig } from "./backup.js";
 import { aiRoutes } from "./routes/ai.js";
-import { authRoutes, teacherRoutes } from "./routes/teacher.js";
+import { authRoutes } from "./routes/auth.js";
+import { teacherRoutes } from "./routes/teacher.js";
 import { studentRoutes } from "./routes/student.js";
 
 // Everything (scripts, fonts, styles) is served from this site, so nothing about a student's visit goes to a third party.
@@ -69,8 +71,9 @@ export function createApp({ db, config }) {
     });
   });
   app.use("/api/ai", aiRoutes({ limit }));
-  app.use("/api/auth", authRoutes({ db }));
-  app.use("/api/teacher", teacherRoutes({ db, limit }));
+  const guard = loginGuard(); // shared, so a teacher's password reset also lifts a student's lockout
+  app.use("/api/auth", authRoutes({ db, guard, teacherAttemptsPerMinute: config.teacherAttemptsPerMinute, studentAttemptsPerMinute: config.studentAttemptsPerMinute }));
+  app.use("/api/teacher", teacherRoutes({ db, limit, guard }));
   app.use("/api/student", studentRoutes({ db, limit }));
   app.use("/api", (_req, _res, next) => next(new HttpError(404, "Not found.")));
 

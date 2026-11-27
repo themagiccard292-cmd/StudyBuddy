@@ -70,6 +70,17 @@ CREATE TABLE IF NOT EXISTS submissions (
   UNIQUE (assignment_id, student_id)
 );
 CREATE INDEX IF NOT EXISTS submissions_student ON submissions(student_id);
+-- Accounts for students (username + password, no email) next to the teachers' email accounts.
+-- These statements are safe to run on every start, and upgrade a database made by an earlier version.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'teacher';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
+ALTER TABLE users ALTER COLUMN email DROP NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower ON users (lower(username)) WHERE username IS NOT NULL;
+-- A "student" row is a membership in one class. Guests prove it with a private token; account holders with user_id.
+ALTER TABLE students ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE students ALTER COLUMN token_hash DROP NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS students_user_class ON students (user_id, class_id) WHERE user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS students_user ON students (user_id);
 CREATE TABLE IF NOT EXISTS ai_usage (
   visitor_key TEXT NOT NULL,
   day DATE NOT NULL,

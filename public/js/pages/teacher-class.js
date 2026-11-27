@@ -76,6 +76,29 @@ export default async function TeacherClass(ctx) {
     });
   }
 
+  // Student logins have no email, so this is how a forgotten password gets fixed: a new temporary one, shown once.
+  async function resetPassword(student) {
+    const ok = await confirmDialog({
+      title: `Reset ${student.firstName}'s password?`,
+      message: "They'll be logged out everywhere. You'll get a temporary password to give them, and they can change it on their Account page.",
+      confirmLabel: "Reset password",
+    });
+    if (!ok) return;
+    try {
+      const res = await api.post(`/api/teacher/students/${student.id}/reset-password`);
+      dialog({
+        title: "Temporary password",
+        body: h("div", { class: "stack" }, h("p", { class: "muted" }, `Give this to ${student.firstName}. Their username is `, h("b", null, res.username), ". It won't be shown again."), h("div", { class: "code-pill big" }, h("b", { class: "temp-pass" }, res.tempPassword))),
+        actions: (close) => [
+          h("button", { class: "btn btn-outline", type: "button", onclick: () => copy(res.tempPassword, "Password") }, icon("copy"), "Copy"),
+          h("button", { class: "btn btn-primary", type: "button", onclick: () => close("ok") }, "Done"),
+        ],
+      });
+    } catch (e) {
+      toast(e.message, { error: true });
+    }
+  }
+
   function draw() {
     const { cls } = data;
     const tabs = [["homework", `Homework (${data.homework.length})`], ["curriculum", `Curriculum (${data.curricula.length})`], ["students", `Students (${data.students.length})`]];
@@ -112,8 +135,8 @@ export default async function TeacherClass(ctx) {
     );
 
     const students = data.students.length === 0
-      ? h("div", { class: "card center stack empty" }, icon("users", 30), h("h3", { class: "card-title" }, "No students yet"), h("p", { class: "muted" }, "Share the join code. Students enter it with their first name."), h("div", { class: "code-pill big" }, h("b", null, cls.joinCode)))
-      : h("div", { class: "card table-card" }, h("table", { class: "table" }, h("thead", null, h("tr", null, h("th", null, "Student"), h("th", null, "Joined"), h("th", { class: "num-col" }, "Homework done"))), h("tbody", null, data.students.map((s) => h("tr", null, h("td", null, s.firstName), h("td", { class: "muted" }, fmtDate(s.createdAt)), h("td", { class: "num-col" }, `${s.completed} of ${publishedCount}`))))));
+      ? h("div", { class: "card center stack empty" }, icon("users", 30), h("h3", { class: "card-title" }, "No students yet"), h("p", { class: "muted" }, "Share the join code. Students enter it with their first name, or with their student account."), h("div", { class: "code-pill big" }, h("b", null, cls.joinCode)))
+      : h("div", { class: "card table-card" }, h("table", { class: "table" }, h("thead", null, h("tr", null, h("th", null, "Student"), h("th", null, "Sign-in"), h("th", null, "Joined"), h("th", { class: "num-col" }, "Homework done"), h("th", null, ""))), h("tbody", null, data.students.map((s) => h("tr", null, h("td", null, s.firstName), h("td", null, s.hasLogin ? h("span", { class: "chip" }, icon("user-round", 13), "Has a login") : h("span", { class: "chip chip-draft" }, "This device only")), h("td", { class: "muted" }, fmtDate(s.createdAt)), h("td", { class: "num-col" }, `${s.completed} of ${publishedCount}`), h("td", { class: "num-col" }, s.hasLogin && h("button", { class: "btn btn-ghost btn-sm", type: "button", onclick: () => resetPassword(s) }, icon("rotate-ccw"), "Reset password")))))));
 
     mount(
       root,

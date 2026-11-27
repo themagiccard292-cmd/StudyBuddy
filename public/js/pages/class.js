@@ -1,28 +1,80 @@
-import { h, icon, skeleton, fmtDate, plural, pts, num } from "../dom.js";
+import { h, icon, fmtDate, plural, pts, num } from "../dom.js";
 import { api } from "../api.js";
+import { currentUser } from "../auth.js";
 import { classSession, study } from "../store.js";
 import { navigate } from "../router.js";
 import { toast } from "../toast.js";
 import { confirmDialog } from "../ui.js";
 
-export default async function ClassPage() {
-  const session = classSession.get();
-  if (!session) {
+const failCard = (e) =>
+  h("div", { class: "card stack" }, h("p", { class: "form-error" }, e.message), h("button", { class: "btn btn-primary", onclick: () => navigate("/class", { replace: true }) }, "Try again"));
+
+export default async function ClassPage(ctx) {
+  const user = await currentUser();
+  if (user?.role === "student") return accountClassPage(ctx);
+  if (user?.role === "teacher") {
+    navigate("/teacher", { replace: true });
+    return h("div");
+  }
+  if (!classSession.get()?.token) {
     navigate("/join", { replace: true });
     return h("div");
   }
+  return classHome({ canSwitch: false, guest: true });
+}
+
+// A logged-in student can be in several classes: pick one, then see its homework.
+async function accountClassPage(ctx) {
+  let list;
+  try {
+    list = (await api.get("/api/student/classes")).classes;
+  } catch (e) {
+    return failCard(e);
+  }
+  if (!list.length) {
+    classSession.clear();
+    navigate("/join", { replace: true });
+    return h("div");
+  }
+  const session = classSession.get();
+  const chosen = session && list.find((c) => c.classId === session.classId);
+  const wantsSwitch = ctx.query.get("switch") === "1";
+  if (!wantsSwitch && (chosen || list.length === 1)) {
+    const c = chosen ?? list[0];
+    classSession.set({ classId: c.classId, className: c.className, firstName: c.firstName });
+    return classHome({ canSwitch: list.length > 1, guest: false });
+  }
+
+  document.title = "My classes | StudyBuddy";
+  return h(
+    "div",
+    { class: "stack-lg" },
+    h("div", { class: "mode-header" }, h("span", { class: "mode-icon" }, icon("school", 26)), h("div", { class: "grow" }, h("h1", { class: "mode-title" }, "My classes"), h("p", { class: "mode-blurb" }, "Pick a class to see its homework and materials.")), h("a", { class: "btn btn-outline", href: "/join" }, icon("plus"), "Join another class")),
+    h("div", { class: "class-grid" }, list.map((c) =>
+      h("button", { class: "card class-card class-pick", type: "button", onclick: () => (classSession.set({ classId: c.classId, className: c.className, firstName: c.firstName }), navigate("/class")) },
+        h("h2", { class: "card-title" }, c.className),
+        h("p", { class: "muted small" }, c.toDo ? `${c.toDo} to do` : "All caught up"),
+        c.toDo > 0 && h("span", { class: "chip chip-mark" }, plural(c.toDo, "homework", "homework"))
+      )
+    ))
+  );
+}
+
+async function classHome({ canSwitch, guest }) {
+  const session = classSession.get();
   document.title = `${session.className} | StudyBuddy`;
   let data;
   try {
     data = await api.get("/api/student/class");
   } catch (e) {
-    if (e.status === 404 || e.status === 401) {
-      classSession.clear();
+    if (e.status === 404 || e.status === 401 || e.status === 400) {
+      if (guest) classSession.clear();
+      else classSession.clear();
       toast(e.message, { error: true });
-      navigate("/join", { replace: true });
+      navigate(guest ? "/join" : "/class", { replace: true });
       return h("div");
     }
-    return h("div", { class: "card stack" }, h("p", { class: "form-error" }, e.message), h("button", { class: "btn btn-primary", onclick: () => navigate("/class", { replace: true }) }, "Try again"));
+    return failCard(e);
   }
 
   async function studyMaterial(m, btn) {
@@ -42,7 +94,10 @@ export default async function ClassPage() {
   return h(
     "div",
     { class: "stack-lg" },
-    h("div", { class: "mode-header" }, h("span", { class: "mode-icon" }, icon("school", 26)), h("div", { class: "grow" }, h("h1", { class: "mode-title" }, data.className), h("p", { class: "mode-blurb" }, `Hi ${data.firstName}. Here's what your teacher has set up.`)), h("button", { class: "btn btn-ghost btn-sm", type: "button", onclick: async () => (await confirmDialog({ title: "Leave this class?", message: "You can rejoin any time with the class code. Your homework results stay with your teacher.", confirmLabel: "Leave class", danger: true })) && (classSession.clear(), navigate("/")) }, icon("log-out"), "Leave class")),
+    h("div", { class: "mode-header" }, h("span", { class: "mode-icon" }, icon("school", 26)), h("div", { class: "grow" }, h("h1", { class: "mode-title" }, data.className), h("p", { class: "mode-blurb" }, `Hi ${data.firstName}. Here's what your teacher has set up.`)),
+      guest
+        ? h("button", { class: "btn btn-ghost btn-sm", type: "button", onclick: async () => (await confirmDialog({ title: "Leave this class?", message: "You can rejoin any time with the class code. Your homework results stay with your teacher.", confirmLabel: "Leave class", danger: true })) && (classSession.clear(), navigate("/")) }, icon("log-out"), "Leave class")
+        : h("div", { class: "row" }, canSwitch && h("a", { class: "btn btn-outline btn-sm", href: "/class?switch=1" }, "All my classes"), h("a", { class: "btn btn-ghost btn-sm", href: "/join" }, icon("plus"), "Join another class"))),
 
     h("section", { class: "stack" }, h("h2", { class: "section-title" }, "Homework"),
       data.homework.length === 0

@@ -4,6 +4,12 @@ import { ICONS } from "./icons.js";
 export function h(tag, props, ...children) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(props ?? {})) {
+    // ARIA state attributes need the text "true" / "false" (a bare attribute means something else, and CSS and
+    // screen readers rely on the exact value).
+    if (k.startsWith("aria-") && typeof v === "boolean") {
+      el.setAttribute(k, String(v));
+      continue;
+    }
     if (v == null || v === false) continue;
     if (k === "class") el.className = v;
     else if (k === "style" && typeof v === "object") Object.assign(el.style, v);
