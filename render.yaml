@@ -1,0 +1,27 @@
+# Render Blueprint: in Render choose New > Blueprint, pick this repo, and it creates everything below.
+# The only value you type in is GEMINI_API_KEY.
+services:
+  - type: web
+    name: studybuddy
+    runtime: node
+    plan: starter            # a paid plan is required for the persistent disk (the free plan can't have one)
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    disk:
+      name: studybuddy-data  # keeps teacher accounts, classes, homework and results across deploys
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION    # the app needs Node 22.5+ (built-in SQLite)
+        value: "22"
+      - key: GEMINI_API_KEY  # asked for when you create the Blueprint; never stored in this file
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: TRUST_PROXY     # use the real visitor address behind Render's proxy
+        value: "1"
+      - key: DATABASE_PATH
+        value: /var/data/pglite
+      - key: DAILY_AI_LIMIT  # AI calls per visitor per day; 0 = unlimited
+        value: "300"

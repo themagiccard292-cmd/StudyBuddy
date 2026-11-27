@@ -1,0 +1,92 @@
+/* StudyBuddy design tokens. Dark is the default; [data-theme="light"] overrides it. */
+:root {
+  color-scheme: dark;
+
+  --bg: hsl(224 42% 8%);
+  --fg: hsl(214 40% 94%);
+  --surface: hsl(224 34% 11%);
+  --card: hsl(224 32% 14%);
+  --popup: hsl(224 32% 17%);
+  --border: hsl(224 25% 21%);
+  --muted: hsl(224 25% 22%);
+  --muted-fg: hsl(218 18% 70%);
+
+  --primary: hsl(217 91% 62%);
+  --primary-fg: hsl(224 50% 8%);
+  --primary-soft: hsl(217 91% 62% / 0.14);
+  --indigo: hsl(250 85% 74%);
+  --indigo-soft: hsl(250 85% 74% / 0.14);
+  --sky: hsl(205 90% 64%);
+  --cyan: hsl(190 95% 58%);
+  --cyan-soft: hsl(190 95% 58% / 0.13);
+
+  --marker: hsl(190 95% 58% / 0.24);
+  --marker-strong: hsl(190 95% 58%);
+  --marker-fg: hsl(224 50% 9%);
+  --paper-line: hsl(214 80% 70% / 0.055);
+
+  --success: hsl(158 62% 52%);
+  --success-soft: hsl(158 62% 52% / 0.16);
+  --error: hsl(352 85% 67%);
+  --error-soft: hsl(352 85% 67% / 0.16);
+
+  --shadow-sm: 0 1px 2px hsl(224 60% 2% / 0.35), 0 3px 8px hsl(224 60% 2% / 0.28);
+  --shadow-md: 0 1px 3px hsl(224 60% 2% / 0.35), 0 10px 18px -6px hsl(224 60% 2% / 0.45), 0 22px 30px -10px hsl(224 60% 2% / 0.32);
+  --shadow-lg: 0 2px 4px hsl(224 60% 2% / 0.35), 0 22px 30px -8px hsl(224 60% 2% / 0.55), 0 36px 50px -12px hsl(224 60% 2% / 0.42);
+  --focus: 0 0 0 3px hsl(217 91% 62% / 0.4);
+
+  --font-body: "Figtree", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-head: "Bricolage Grotesque", "Figtree", system-ui, sans-serif;
+  --font-hand: "Caveat", cursive;
+
+  --r-sm: 0.5rem;
+  --r: 0.75rem;
+  --r-md: 1rem;
+  --r-lg: 1.375rem;
+  --r-full: 9999px;
+
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --t-fast: 150ms;
+  --t: 260ms;
+  --t-slow: 420ms;
+
+  --s1: 0.25rem; --s2: 0.5rem; --s3: 0.75rem; --s4: 1rem; --s6: 1.5rem; --s8: 2rem; --s12: 3rem; --s16: 4rem;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: hsl(214 50% 97%);
+  --fg: hsl(223 47% 14%);
+  --surface: hsl(214 42% 94%);
+  --card: hsl(214 70% 99.5%);
+  --popup: hsl(0 0% 100%);
+  --border: hsl(214 32% 85%);
+  --muted: hsl(214 32% 89%);
+  --muted-fg: hsl(221 16% 38%);
+
+  --primary: hsl(221 83% 48%);
+  --primary-fg: hsl(214 60% 98%);
+  --primary-soft: hsl(221 83% 48% / 0.09);
+  --indigo: hsl(243 68% 54%);
+  --indigo-soft: hsl(243 68% 54% / 0.1);
+  --sky: hsl(205 85% 42%);
+  --cyan: hsl(195 82% 36%);
+  --cyan-soft: hsl(195 82% 36% / 0.1);
+
+  --marker: hsl(192 95% 52% / 0.32);
+  --marker-strong: hsl(192 92% 56%);
+  --marker-fg: hsl(223 47% 14%);
+  --paper-line: hsl(221 60% 45% / 0.07);
+
+  --success: hsl(160 72% 30%);
+  --success-soft: hsl(160 72% 32% / 0.12);
+  --error: hsl(350 72% 48%);
+  --error-soft: hsl(350 72% 50% / 0.1);
+
+  --shadow-sm: 0 1px 2px hsl(223 60% 15% / 0.06), 0 3px 8px hsl(223 60% 15% / 0.06);
+  --shadow-md: 0 1px 3px hsl(223 60% 15% / 0.06), 0 10px 18px -6px hsl(223 60% 15% / 0.1), 0 22px 30px -10px hsl(223 60% 15% / 0.07);
+  --shadow-lg: 0 2px 4px hsl(223 60% 15% / 0.06), 0 22px 30px -8px hsl(223 60% 15% / 0.14), 0 36px 50px -12px hsl(223 60% 15% / 0.1);
+  --focus: 0 0 0 3px hsl(221 83% 48% / 0.3);
+}
