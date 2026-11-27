@@ -21,14 +21,31 @@ export function authRoutes({ db, teacherAttemptsPerMinute = 12, studentAttemptsP
   // (unless the account is already in that class).
   const claimGuest = async (userId, token) => {
     if (typeof token !== "string" || !token) return false;
-    const moved = await db.run(
-      `UPDATE students SET user_id = ?, token_hash = NULL
-       WHERE token_hash = ? AND user_id IS NULL
-         AND NOT EXISTS (SELECT 1 FROM students x WHERE x.user_id = ? AND x.class_id = students.class_id)
-       RETURNING id`,
-      [userId, sha256(token), userId]
+    const guest = await db.get("SELECT id, class_id FROM students WHERE token_hash = ? AND user_id IS NULL", [sha256(token)]);
+    if (!guest) return false;
+    const mine = await db.get("SELECT id FROM students WHERE user_id = ? AND class_id = ?", [userId, guest.class_id]);
+    if (mine) return mergeGuest(guest.id, mine.id);
+    try {
+      const moved = await db.run("UPDATE students SET user_id = ?, token_hash = NULL WHERE id = ? AND user_id IS NULL RETURNING id", [userId, guest.id]);
+      return moved.rows.length > 0;
+    } catch (e) {
+      if (!isUniqueViolation(e)) throw e;
+      // The account joined that class at the same moment: treat it as already in it.
+      const now = await db.get("SELECT id FROM students WHERE user_id = ? AND class_id = ?", [userId, guest.class_id]);
+      return now ? mergeGuest(guest.id, now.id) : false;
+    }
+  };
+
+  // The account is already in that class: fold the device's guest entry into it so the teacher doesn't see the same
+  // student twice. Homework results move over unless the account already has its own for that homework.
+  const mergeGuest = async (guestId, accountMemberId) => {
+    await db.run(
+      `UPDATE submissions SET student_id = ? WHERE student_id = ?
+         AND assignment_id NOT IN (SELECT assignment_id FROM submissions WHERE student_id = ?)`,
+      [accountMemberId, guestId, accountMemberId]
     );
-    return moved.rows.length > 0;
+    await db.run("DELETE FROM students WHERE id = ? AND user_id IS NULL", [guestId]);
+    return false; // no new class came along; the account already had it
   };
 
   // ---------- teachers ----------

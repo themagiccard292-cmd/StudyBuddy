@@ -4,9 +4,11 @@ import { api } from "../api.js";
 import { classSession } from "../store.js";
 import { navigate } from "../router.js";
 import { requireStudentClass } from "./_auth.js";
+import { currentUser } from "../auth.js";
 import { errorBox } from "../ui.js";
 
 const LETTERS = ["A", "B", "C", "D"];
+const draftPrefix = (user) => (user ? `studybuddy:hw:u${user.id}:` : "studybuddy:hw:g:");
 
 export default async function Homework(ctx) {
   if (!(await requireStudentClass())) return h("div");
@@ -15,11 +17,22 @@ export default async function Homework(ctx) {
   try {
     data = await api.get(`/api/student/homework/${id}`);
   } catch (e) {
-    return h("div", { class: "card stack" }, h("p", { class: "form-error" }, e.message), h("a", { class: "btn btn-primary", href: "/class" }, "Back to my class"));
+    // A link to homework from another of this student's classes: switch to that class and try again.
+    if (e.status === 404 && !classSession.get()?.token && (await currentUser())?.role === "student") {
+      try {
+        const where = await api.get(`/api/student/homework/${id}/where`);
+        classSession.set({ classId: where.classId, className: where.className, firstName: where.firstName });
+        data = await api.get(`/api/student/homework/${id}`);
+      } catch {
+        /* not in any of their classes: fall through to the message below */
+      }
+    }
+    if (!data) return h("div", { class: "card stack" }, h("p", { class: "form-error" }, e.message), h("a", { class: "btn btn-primary", href: "/class" }, "Back to my class"));
   }
   document.title = `${data.assignment.title} | StudyBuddy`;
 
-  const draftKey = `studybuddy:hw:${id}`;
+  // Unsent answers belong to whoever is logged in (or to this device for a guest), so a shared computer never mixes them.
+  const draftKey = `${draftPrefix(await currentUser())}${id}`;
   const loadDraft = () => { try { return JSON.parse(localStorage.getItem(draftKey) ?? "{}"); } catch { return {}; } };
   const saveDraft = () => { try { localStorage.setItem(draftKey, JSON.stringify(answers)); } catch { /* ignore */ } };
   let answers = loadDraft(); // { [questionId]: string } so a reload never loses work

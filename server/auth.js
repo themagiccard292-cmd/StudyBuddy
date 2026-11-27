@@ -14,8 +14,10 @@ export async function hashPassword(password) {
 }
 
 export async function verifyPassword(password, stored) {
-  const [saltHex, keyHex] = stored.split(":");
+  const [saltHex, keyHex] = String(stored).split(":");
+  if (!saltHex || !keyHex) return false; // a damaged stored hash never matches (and never crashes the login)
   const expected = Buffer.from(keyHex, "hex");
+  if (!expected.length) return false;
   const actual = await scrypt(password, Buffer.from(saltHex, "hex"), expected.length);
   return timingSafeEqual(expected, actual);
 }
@@ -93,6 +95,28 @@ export async function verifyOrBurn(password, stored) {
 const TEMP_ALPHABET = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no look-alike characters
 export const temporaryPassword = () => Array.from({ length: 10 }, () => TEMP_ALPHABET[randomInt(TEMP_ALPHABET.length)]).join("");
 
+/**
+ * Keeps a limiter's map from growing forever without letting a flood of junk names wipe real lockouts: first drop
+ * entries with nothing recent, then drop ones that are not locked (fewer than `max` recent tries), oldest first, and only
+ * if everything left is locked drop the oldest of those.
+ */
+function prune(map, { windowMs, max }) {
+  const now = Date.now();
+  const recent = (times) => times.filter((t) => now - t < windowMs).length;
+  for (const [k, v] of map) if (recent(v) === 0) map.delete(k);
+  while (map.size > 4000) {
+    let victim;
+    for (const [k, v] of map) {
+      victim ??= k; // fallback: the oldest
+      if (recent(v) < max) {
+        victim = k;
+        break;
+      }
+    }
+    map.delete(victim);
+  }
+}
+
 /** Remembers failed logins per account name so a classmate can't guess someone's password forever. */
 export function loginGuard({ max = 10, windowMs = 10 * 60_000 } = {}) {
   const fails = new Map();
@@ -104,7 +128,7 @@ export function loginGuard({ max = 10, windowMs = 10 * 60_000 } = {}) {
     fail(key) {
       const k = key.toLowerCase();
       fails.set(k, [...recent(k), Date.now()]);
-      if (fails.size > 5000) fails.clear();
+      if (fails.size > 5000) prune(fails, { windowMs, max });
     },
     ok(key) {
       fails.delete(key.toLowerCase());
@@ -122,7 +146,7 @@ export function attemptLimiter({ windowMs = 60_000, max = 10 } = {}) {
     if (recent.length >= max) throw new HttpError(429, "Too many attempts. Wait a minute and try again.");
     recent.push(now);
     hits.set(key, recent);
-    if (hits.size > 5000) hits.clear();
+    if (hits.size > 5000) prune(hits, { windowMs, max });
     next();
   };
 }

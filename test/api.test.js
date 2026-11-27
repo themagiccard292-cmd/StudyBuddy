@@ -2,6 +2,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { openDb } from "../server/db.js";
 import { createApp } from "../server/app.js";
+import { loginGuard, verifyPassword } from "../server/auth.js";
 
 process.env.GEMINI_API_KEY = "test-key";
 
@@ -662,6 +663,9 @@ test("a guest who joined with a code keeps their class when they make an account
   const g2 = await api("POST", "/api/student/join", { body: { code: t.code, firstName: "Gus" } });
   const dupe = await api("POST", "/api/auth/student/login", { body: { username: "gus.account", password: "student-pass-1", guestToken: g2.json.token } });
   assert.equal(dupe.json.claimedClass, false);
+  // ...and the leftover guest entry is folded into the account instead of showing up as a second student
+  assert.equal((await api("GET", "/api/student/class", { token: g2.json.token })).status, 404);
+  assert.equal((await api("GET", `/api/teacher/classes/${t.classId}`, { cookie: t.cookie })).json.students.length, 1);
   const other = await teacherWithClass("Claim2");
   const g3 = await api("POST", "/api/student/join", { body: { code: other.code, firstName: "Gus" } });
   const moved = await api("POST", "/api/auth/student/login", { body: { username: "gus.account", password: "student-pass-1", guestToken: g3.json.token } });
@@ -746,4 +750,76 @@ test("look-alike letters can't reach a locked account under a different lockout 
   }
   // the Kelvin sign lower-cases to a plain k in both, so it shares kid.lock's lockout
   assert.equal((await api("POST", "/api/auth/student/login", { body: { username: "Kid.lock", password: "student-pass-1" } })).status, 429);
+});
+
+test("a guest's results are folded into the account they log into, without overwriting the account's own", async () => {
+  const t = await teacherWithClass("Fold");
+  const stu = await registerStudent("fold.me", { firstName: "Fio" });
+  await api("POST", "/api/student/join", { cookie: stu.cookie, body: { code: t.code } });
+  const guest = await api("POST", "/api/student/join", { body: { code: t.code, firstName: "Fio" } });
+  await api("POST", `/api/student/homework/${t.homeworkId}/submit`, { token: guest.json.token, body: { answers: [{ id: "q1", answer: "0" }] } });
+  const login = await api("POST", "/api/auth/student/login", { body: { username: "fold.me", password: "student-pass-1", guestToken: guest.json.token } });
+  const home = await api("GET", "/api/student/class", { cookie: login.cookie });
+  assert.ok(home.json.homework[0].submission, "the guest's hand-in came along");
+  assert.equal((await api("GET", `/api/teacher/classes/${t.classId}`, { cookie: t.cookie })).json.students.length, 1);
+});
+
+test("joining the same class twice at once gives one membership and no error", async () => {
+  const t = await teacherWithClass("Twice");
+  const stu = await registerStudent("double.tap", { firstName: "Dee" });
+  const both = await Promise.all([1, 2, 3].map(() => api("POST", "/api/student/join", { cookie: stu.cookie, body: { code: t.code } })));
+  for (const r of both) assert.ok(r.status === 200 || r.status === 201, `status ${r.status}`);
+  assert.equal((await api("GET", `/api/teacher/classes/${t.classId}`, { cookie: t.cookie })).json.students.length, 1);
+});
+
+test("a link to homework in another of your classes can find its class", async () => {
+  const a = await teacherWithClass("LinkA");
+  const b = await teacherWithClass("LinkB");
+  const stu = await registerStudent("two.classes", { firstName: "Tia" });
+  await api("POST", "/api/student/join", { cookie: stu.cookie, body: { code: a.code } });
+  await api("POST", "/api/student/join", { cookie: stu.cookie, body: { code: b.code } });
+  const where = await api("GET", `/api/student/homework/${b.homeworkId}/where`, { cookie: stu.cookie });
+  assert.equal(where.status, 200);
+  assert.equal(where.json.classId, b.classId);
+  const other = await teacherWithClass("LinkC"); // a class they are not in
+  assert.equal((await api("GET", `/api/student/homework/${other.homeworkId}/where`, { cookie: stu.cookie })).status, 404);
+  const guest = await api("POST", "/api/student/join", { body: { code: a.code, firstName: "Gia" } });
+  assert.equal((await api("GET", `/api/student/homework/${a.homeworkId}/where`, { token: guest.json.token })).status, 403);
+});
+
+test("lockouts survive a flood of junk names, and a damaged stored hash just fails the login", async () => {
+  const guard = loginGuard({ max: 3 });
+  for (let i = 0; i < 3; i++) guard.fail("s:victim");
+  for (let i = 0; i < 6000; i++) guard.fail(`s:junk${i}`);
+  assert.throws(() => guard.check("s:victim"), (e) => e.status === 429);
+  for (const bad of ["x", "", ":", "abc:", ":abc"]) assert.equal(await verifyPassword("whatever", bad), false, JSON.stringify(bad));
+});
+
+test("if another request wins the race to add a membership, the loser is told they're already in", async () => {
+  const t = await teacherWithClass("Race");
+  const stu = await registerStudent("race.me", { firstName: "Rae" });
+  // A second copy of the app whose membership insert collides, the way two simultaneous joins can on a real database:
+  // the row goes in (the "other request"), then this request's insert reports a unique-index violation.
+  const racing = {
+    ...db,
+    async run(sql, params) {
+      const result = await db.run(sql, params);
+      if (/^INSERT INTO students \(class_id, first_name, user_id\)/.test(sql)) throw Object.assign(new Error("duplicate key"), { code: "23505" });
+      return result;
+    },
+  };
+  const app2 = createApp({ db: racing, config: { sessionSecret: "test-secret", dailyAiLimit: 6, trustProxy: false } });
+  const srv = await new Promise((resolve) => { const s = app2.listen(0, () => resolve(s)); });
+  try {
+    const res = await realFetch(`http://127.0.0.1:${srv.address().port}/api/student/join`, {
+      method: "POST",
+      headers: { "X-Requested-With": "StudyBuddy", "Content-Type": "application/json", Cookie: stu.cookie },
+      body: JSON.stringify({ code: t.code }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).alreadyJoined, true);
+  } finally {
+    srv.close();
+  }
+  assert.equal((await api("GET", `/api/teacher/classes/${t.classId}`, { cookie: t.cookie })).json.students.length, 1);
 });

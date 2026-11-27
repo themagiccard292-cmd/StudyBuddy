@@ -34,6 +34,12 @@ export const auth = {
     await api.post("/api/auth/logout").catch(() => {});
     // A class chosen through an account belongs to that account; a guest's device token stays with the device.
     if (classSession.get() && !classSession.get().token) classSession.clear();
+    // Unsent homework answers saved on this device for that account shouldn't stay behind for the next person.
+    try {
+      for (const k of Object.keys(localStorage)) if (k.startsWith("studybuddy:hw:u")) localStorage.removeItem(k);
+    } catch {
+      /* ignore */
+    }
     user = null;
     notify();
   },

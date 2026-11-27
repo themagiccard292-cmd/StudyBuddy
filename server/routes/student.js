@@ -2,6 +2,7 @@
 import { Router } from "express";
 import { randomBytes } from "node:crypto";
 import { HttpError, sha256, str, int, list, camel } from "../http.js";
+import { isUniqueViolation } from "../db.js";
 import { attemptLimiter, currentUser } from "../auth.js";
 import { gradeAnswers } from "../grade.js";
 import { totalPoints, toPublic } from "../homework.js";
@@ -37,7 +38,15 @@ export function studentRoutes({ db, limit }) {
     for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${firstName} (${n})`;
 
     if (user) {
-      await db.run("INSERT INTO students (class_id, first_name, user_id) VALUES (?, ?, ?)", [cls.id, name, user.id]);
+      try {
+        await db.run("INSERT INTO students (class_id, first_name, user_id) VALUES (?, ?, ?)", [cls.id, name, user.id]);
+      } catch (e) {
+        if (!isUniqueViolation(e)) throw e;
+        // Two joins for the same class at the same moment (a double tap, two tabs): the first one won.
+        const won = await db.get("SELECT first_name FROM students WHERE user_id = ? AND class_id = ?", [user.id, cls.id]);
+        if (!won) throw e;
+        return res.json({ classId: cls.id, className: cls.name, firstName: won.first_name, alreadyJoined: true });
+      }
       return res.status(201).json({ classId: cls.id, className: cls.name, firstName: name });
     }
     const token = randomBytes(24).toString("base64url");
@@ -76,6 +85,19 @@ export function studentRoutes({ db, limit }) {
       [req.account.id]
     );
     res.json({ classes: rows.map(camel) });
+  });
+
+  // Which of my classes is this homework in? Lets a link to another class's homework switch to that class.
+  r.get("/homework/:id/where", async (req, res) => {
+    if (!req.account) throw new HttpError(403, "Log in to look across your classes.");
+    const row = await db.get(
+      `SELECT c.id AS class_id, c.name AS class_name, s.first_name FROM assignments a
+         JOIN students s ON s.class_id = a.class_id AND s.user_id = ? JOIN classes c ON c.id = a.class_id
+       WHERE a.id = ? AND a.status = 'published'`,
+      [req.account.id, int(req.params.id, { name: "Homework" })]
+    );
+    if (!row) throw new HttpError(404, "That homework isn't in any of your classes.");
+    res.json(camel(row));
   });
 
   // Everything below is about one class. Accounts say which with the X-Class-Id header.
